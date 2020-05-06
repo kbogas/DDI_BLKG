@@ -125,5 +125,10 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+
+# data
+data/
+*.csv
+
 # Pyre type checker
 .pyre/

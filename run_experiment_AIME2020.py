@@ -1,12 +1,23 @@
 #!/usr/bin/python
 # encoding:utf-8
 
+"""
+This is a sample script to generate the results as discussed in the paper.
+First of all the required modules should be installed and the related embeddings downloaded in ./data/Embeddings folder.
 
-import pandas as pd
-import numpy as np
+The procedure followed merges one-by-one the embeddings for each method into one big dataframe,
+while keeping track of the columns that correspond to each one. Finally, the 10-fold cv procedure with the inner 5-fold cv for hyperparameter tuning is followed.
+
+Just run the script to invoke the main.
+"""
+
 import random
 import copy
+import os
 import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
 
 from tqdm import tqdm_notebook
 from collections import Counter
@@ -14,39 +25,32 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn import metrics
 from sklearn.model_selection import cross_val_predict, StratifiedKFold, train_test_split
 
-
+# For deterministic purposes
 random_state = 42
 np.random.seed(random_state)
 random.seed(random_state)
 
-cv_folds = StratifiedKFold(n_splits=10, shuffle=True, random_state=random_state)
-
-
-### FOR RANDOM SEARCH
-# Number of trees in random forest
-n_estimators = [100]
-# Number of features to consider at every split
-max_features = ['auto', 'sqrt']
-# Maximum number of levels in tree
-max_depth = [int(x) for x in np.linspace(10, 110, num = 11)]
-max_depth.append(None)
-# Minimum number of samples required to split a node
-min_samples_split = [2, 5, 10]
-# Minimum number of samples required at each leaf node
-min_samples_leaf = [1, 2, 4]
-# Method of selecting samples for training each tree
-bootstrap = [True, False]# Create the random grid
-random_grid = {'n_estimators': n_estimators,
-               'max_features': max_features,
-               'max_depth': max_depth,
-               'min_samples_split': min_samples_split,
-               'min_samples_leaf': min_samples_leaf,
-               'bootstrap': bootstrap,
-                'random_state':rs}
-
-
 
 def generate_correct_data(df_all, related, balance, truth_label):
+    """
+    Simple function to fetch the needed data from the big dataframe. This allows for fetching either AD,LC or all data. Also, it allows for down-sampling the negative class to have a
+    balanced sample.
+    Input:
+        - df_all: pd.DataFrame,
+          Dataframe containing the drug-pairs with their corresponding features and a column ("AD") denoting whether this is an AD or LC pair.
+        - related: string or None,
+          if related == 'AD' only ad-related drugs are kept, while if related == 'LC' only lc drugs
+          are kept. If anything else, all drugs are kept.
+        - balance: boolean,
+          if True downsample the negative class to match the size of the positive class.
+        - truth_label: string,
+          the name of the column containing the truth labels about the interactivity of the pair
+    Output:
+        - df_data: pd.DataFrame,
+        the fetched dataframe according to related and balance
+        - details: dictionary,
+        dictionary containing the details of the selection (i.e. if only 'AD' drugs where kept, whether they were balanced etc.)
+    """
     df_cur = df_all.copy()
     details = {}
     if related == 'AD':
@@ -73,17 +77,26 @@ def generate_correct_data(df_all, related, balance, truth_label):
 
 def get_scores(y, res2, res2_probas):
     """
-    Precision, Recall, F1 for positive class.
+    Scores for the evaluations of each method.
+    Input:
+        - y: iterable of length (N_samples),
+          contains the truth labels of the samples
+        - res2: iterable,
+          contains the predicted labels of the samples. It is expected to be of length N_samples.
+        - res2_probas: iterable,
+          contains the predicted probabilities of the classes. It is expected to be of size
+          N_samples x 2, where the [:, 1] column contains the probabilities of the positive class.
+    Output:
+        - dictionary, containing the measures needed.
     """
-    #print(y.shape)
-    #print(res2.shape)
+
     if len(np.shape(res2_probas)) == 1:
-        res2_probas = np.hstack((1 - res2_probas.reshape(-1,1), res2_probas.reshape(-1,1)))
+        res2_probas = np.hstack((1 - res2_probas.reshape(-1, 1), res2_probas.reshape(-1, 1)))
     p, r, f, s = metrics.precision_recall_fscore_support(y, res2, pos_label=1)
     return {
-        "Accuracy":metrics.accuracy_score(y,res2),
-        "AUC":metrics.roc_auc_score(y, res2_probas[:,1]),
-        "AP":metrics.average_precision_score(y, res2_probas[:,1]),
+        "Accuracy": metrics.accuracy_score(y, res2),
+        "AUC": metrics.roc_auc_score(y, res2_probas[:, 1]),
+        "AP": metrics.average_precision_score(y, res2_probas[:, 1]),
         "Precision": p[1],
         "Recall": r[1],
         "F1": f[1],
@@ -92,151 +105,176 @@ def get_scores(y, res2, res2_probas):
     }
 
 
+def load_data(model_names, path_to_embeddings_folder='./data/Embeddings/'):
+    """
+    Helper function to load the dataset in one big dataframe.
+    Input:
+        - model_names: list/iterable,
+          iterable of strings containing the model names. Starting from DDI-BLKG for initialization
+        - path_to_embeddings_folder: string,
+          path to the downloaded embedding folder
+    Output:
+        - df_all: pd.DataFrame,
+          one big dataframe containing one drug-pair per row. Its columns are the concatenated
+          embeddings and other features of each drug pair (e.g. the name of the drugs in the pair,
+          if it's AD-/LC-related, its truth_label etc.)
+        - columns: dictionary,
+          contains the column boundaries in the df_all variable, for each competing methodology
+    """
+    df_all, columns = load_ddi_blkg_and_dataset(path_to_embeddings_folder)
+    for name_of_method in model_names[1:]:
+        df_all, columns = append_features_for_drugs(df_all, columns, path_to_embeddings_folder, name_of_method)
+    return df_all, columns
 
-# Load drug-pairs and DDI_BLKG embeddings
-df_all = pd.read_csv('./data/Dataset_and_BLKG.csv')
-df_all.head()
-df_all = df_all.drop('Path_Count', axis=1)
-df_all = df_all[df_all['Literature']==1]
-df_all = df_all.drop(['INTERACTS', 'Literature'], axis=1)
+def load_ddi_blkg_and_dataset(path_to_embeddings_folder):
+    """
+    Helper function to load the drug pairs and the DDI-BLKG data.
+    Input:
+        - path_to_embeddings_folder: string,
+          path to the downloaded embedding folder
+    Output:
+        - df_all: pd.DataFrame,
+          one big dataframe containing one drug-pair per row. Its columns are the concatenated
+          embeddings and other features of each drug pair (e.g. the name of the drugs in the pair,
+          if it's AD-/LC-related, its truth_label etc.)
+        - columns: dictionary,
+          contains the column boundaries in the df_all variable, for each competing methodology
+    """
+    path_to_load = os.path.join(path_to_embeddings_folder, 'Dataset_and_BLKG.csv')
+    df_all = pd.read_csv(path_to_load)
+    df_all = df_all.drop('Path_Count', axis=1)
+    df_all = df_all[df_all['Literature'] == 1]
+    df_all = df_all.drop(['INTERACTS', 'Literature'], axis=1)
+    columns = {'DDI-BLKG': [1, 105 + 1]}
+    return df_all, columns
+
+def append_features_for_drugs(df_all, columns, path_to_embeddings_folder, name_of_method):
+    """
+    Helper function to update df_all and columns with new features. This appends the new features in the existing dataframe and updates the columns dict as needed.
+    Input:
+        - df_all: pd.DataFrame,
+          one big dataframe containing one drug-pair per row. Its columns are the concatenated
+          embeddings and other features of each drug pair (e.g. the name of the drugs in the pair,
+          if it's AD-/LC-related, its truth_label etc.)
+        - columns: dictionary,
+          contains the column boundaries in the df_all variable, for each competing methodology
+        - path_to_embeddings_folder: string,
+          path to the downloaded embedding folder
+        - name_of_method: string,
+          name of the methodoly to load its corresponding embedding file
+    Output:
+        - df_all: pd.DataFrame,
+          one big dataframe containing one drug-pair per row. Its columns are the concatenated
+          embeddings and other features of each drug pair (e.g. the name of the drugs in the pair,
+          if it's AD-/LC-related, its truth_label etc.)
+        - columns: dictionary,
+          contains the column boundaries in the df_all variable, for each competing methodology
+    """
+    path_to_load = os.path.join(path_to_embeddings_folder, name_of_method)
+    path_to_load += '.csv'
+    df_cur_embeddings = pd.read_csv(path_to_load)
+    df_cur_embeddings = df_cur_embeddings.iloc[df_all.index]
+    df_all = df_all.merge(df_cur_embeddings, on='pair')
+    if name_of_method == 'TransE':
+        df_all.reset_index(drop=True, inplace=True)
+        columns.update({'TransE_Emb': [110, 110 + 300]})
+        columns.update({'TransE': [columns['TransE_Emb'][1], columns['TransE_Emb'][1] + 1]})
+    elif name_of_method == 'HolE':
+        columns.update({'HolE_Emb': [columns['TransE'][1], columns['TransE'][1] + 300]})
+        columns.update({'HolE': [columns['HolE_Emb'][1], columns['HolE_Emb'][1] + 1]})
+    elif name_of_method == 'DistMult':
+        columns.update({'DistMult_Emb': [columns['HolE'][1], columns['HolE'][1] + 300]})
+        columns.update({'DistMult': [columns['DistMult_Emb'][1], columns['DistMult_Emb'][1] + 1]})
+    elif name_of_method == 'RESCAL':
+        columns.update({'RESCAL_Emb': [columns['DistMult'][1], columns['DistMult'][1] + 200]})
+        columns.update({'RESCAL': [columns['RESCAL_Emb'][1], columns['RESCAL_Emb'][1] + 1]})
+    else:
+        print('Method not implemented!You need to format the correspoding loading method!')
+        raise NotImplementedError
+    print('Merged with %s embeddings. Size: (%d, %d)' % (name_of_method, df_cur_embeddings.shape))
+    return df_all, columns
 
 
-# NCSR columns
-columns = {'NCSR':[1, 105 + 1]}
-df_all[df_all.columns.values[columns['NCSR'][0]:columns['NCSR'][1]]]
-
-
-
-# TRANSE
-
-df_transe_embeddings = pd.read_csv("./data/TransE.csv")
-print(df_transe_embeddings.shape)
-df_transe_embeddings = df_transe_embeddings.iloc[df_all.index]
-print(df_transe_embeddings.shape)
-
-
-
-df_all = df_all.merge(df_transe_embeddings, on='pair')
-columns.update({'TransE_Emb':[110, 110+300]})
-columns.update({'TransE':[columns['TransE_Emb'][1],columns['TransE_Emb'][1]+1]})
-print(df_all[df_all.columns.values[columns['TransE_Emb'][0]:columns['TransE_Emb'][1]]].head())
-print(df_all[df_all.columns.values[columns['TransE'][0]:columns['TransE'][1]]].head())
-del df_transe_embeddings
-df_all.reset_index(drop=True, inplace=True)
-
-
-
-# Hole
-df_hole_embeddings = pd.read_csv("./Embedding_Methods/Literature_Embeddings/HolE_3_3.csv")
-df_hole_embeddings = df_hole_embeddings.iloc[df_all.index]
-print(df_hole_embeddings.shape)
-df_all = df_all.merge(df_hole_embeddings, on='pair')
-columns.update({'HolE_Emb':[columns['TransE'][1],columns['TransE'][1]+300]})
-columns.update({'HolE':[columns['HolE_Emb'][1],columns['HolE_Emb'][1]+1]})
-print(df_all[df_all.columns.values[columns['HolE_Emb'][0]:columns['HolE_Emb'][1]]])
-print(df_all[df_all.columns.values[columns['HolE'][0]:columns['HolE'][1]]])
-del df_hole_embeddings
-
-
-# DistMult
-df_dist_embeddings = pd.read_csv("./Embedding_Methods/Literature_Embeddings/DistMult_3_3.csv")
-df_dist_embeddings = df_dist_embeddings.iloc[df_all.index]
-print(df_dist_embeddings.shape)
-df_all = df_all.merge(df_dist_embeddings, on='pair')
-columns.update({'DistMult_Emb':[columns['HolE'][1],columns['HolE'][1]+300]})
-columns.update({'DistMult':[columns['DistMult_Emb'][1],columns['DistMult_Emb'][1]+1]})
-print(df_all[df_all.columns.values[columns['DistMult_Emb'][0]:columns['DistMult_Emb'][1]]])
-print(df_all[df_all.columns.values[columns['DistMult'][0]:columns['DistMult'][1]]])
-del df_dist_embeddings
-
-
-# Rescal
-
-df_rescal_embeddings = pd.read_csv("./Embedding_Methods/Literature_Embeddings/RESCAL_8_3.csv")
-df_rescal_embeddings = df_rescal_embeddings.iloc[df_all.index]
-print(df_rescal_embeddings.shape)
-df_all = df_all.merge(df_rescal_embeddings, on='pair')
-columns.update({'RESCAL_Emb':[columns['DistMult'][1],columns['DistMult'][1]+200]})
-columns.update({'RESCAL':[columns['RESCAL_Emb'][1],columns['RESCAL_Emb'][1]+1]})
-print(df_all[df_all.columns.values[columns['RESCAL_Emb'][0]:columns['RESCAL_Emb'][1]]])
-print(df_all[df_all.columns.values[columns['RESCAL'][0]:columns['RESCAL'][1]]])
-del df_rescal_embeddings
-
-
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
-cv_folds = StratifiedKFold(n_splits=10, shuffle=True, random_state=random_state)
-truth_label = 'GT_531'
-use_inner_cv = True
-inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
-model_names = [
-               'NCSR',
-               'TransE_Emb',
-               'HolE_Emb',
-               'DistMult_Emb',
-               'RESCAL_Emb',
-
-#                'TransE',
-#                'HolE',
-#                'RESCAL',
-#                'DistMult'
-              ]
-combs = [
-#    (False, 1, 'All'),
-  (False, 1, 'AD'),
-  (False, 1, 'LC'),
-# (True, 1, 'AD'),
-# (True, 1, 'LC'),
-#     (True, 1, 'All'),
-#     (True, 1, 'AD'),
-#     (True, 1, 'LC'),
-#     (True, 1, 'All'),
-#    (True, 0, 'All'),
-#    (True, 0, 'LC'),
-#    (True, 0, 'AD'),
-]
-results = []
-for model_name in model_names:
-    print(f'Model: {model_name}')
-    for comb in combs:
-        print(f'Comb: {comb}')
-        balanced, literature, related = comb
-        df_data, details = generate_correct_data(df_test, related, balanced, truth_label)
-        #print(comb)
-        details['Model'] = model_name
-        fold_count = 0
-        print(df_data[truth_label].value_counts())
-        for train_index, test_index in cv_folds.split(df_data, df_data[truth_label]):
-            print(f'Fold: {fold_count}')
-            fold_count += 1
-            details_run = details.copy()
-            details_run['Fold'] = fold_count
-            cur_y = df_data[truth_label].values
-            train_y = cur_y[train_index]
-            test_y = cur_y[test_index]
-            if model_name == 'AMFP':
-                pair_names = df_data.pair.values
-                train_X = get_emb_from_pairs(pair_names[train_index], d_emb)
-                test_X = get_emb_from_pairs(pair_names[test_index], d_emb)
-            else:
+def main():
+    """
+    Wrapper function to execute experiments.
+    Currently all functionality inside this main.
+    """
+    # Name of the model names
+    model_names = [
+                   'DDI-BLKG',
+                   'TransE',
+                   'HolE',
+                   'DistMult',
+                   'RESCAL',
+    ]
+    # Load the data and features
+    df_all, columns = load_data(model_names, './data/Embeddings')
+    # For the nested cv procedures
+    outer_cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=random_state)
+    inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    use_inner_cv = False
+    # Random Grid for param-tuning
+    n_estimators = [100]
+    max_features = ['auto', 'sqrt']
+    max_depth = [int(x) for x in np.linspace(10, 110, num=11)]
+    max_depth.append(None)
+    min_samples_split = [2, 5, 10]
+    min_samples_leaf = [1, 2, 4]
+    bootstrap = [True, False]
+    random_grid = {'n_estimators': n_estimators,
+                   'max_features': max_features,
+                   'max_depth': max_depth,
+                   'min_samples_split': min_samples_split,
+                   'min_samples_leaf': min_samples_leaf,
+                   'bootstrap': bootstrap,
+                    'random_state':rs}
+    # Label of the drug pair according to which drugbank
+    truth_label = 'GT_503'
+    combs = [
+      (False, 1, 'AD'),
+      (False, 1, 'LC'),
+    ]
+    results = []
+    for model_name in model_names:
+        print(f'Model: {model_name}')
+        for comb in combs:
+            balanced, literature, related = comb
+            df_data, details = generate_correct_data(df_all, related, balanced, truth_label)
+            details['Model'] = model_name
+            fold_count = 0
+            print(df_data[truth_label].value_counts())
+            for train_index, test_index in cv_folds.split(df_data, df_data[truth_label]):
+                print(f'Fold: {fold_count}')
+                fold_count += 1
+                details_run = details.copy()
+                details_run['Fold'] = fold_count
+                cur_y = df_data[truth_label].values
+                train_y = cur_y[train_index]
+                test_y = cur_y[test_index]
                 cur_X = df_data[df_data.columns[columns[model_name][0]:columns[model_name][1]]].values
                 train_X = cur_X[train_index]
                 test_X = cur_X[test_index]
+                if use_inner_cv:
+                    dt = RandomForestClassifier(n_jobs=1, random_state=random_state)
+                    #gs = GridSearchCV(dt, param_grid=param_grid, cv=inner_cv, refit=True, n_jobs=-1, verbose=0)
+                    gs = RandomizedSearchCV(estimator=dt, param_distributions=random_grid, n_iter=30, n_jobs=-1, cv=inner_cv, refit=True, random_state=random_state, verbose=0)
+                    gs.fit(train_X, train_y)
+                    dt = gs.best_estimator_
+                else:
+                    dt = RandomForestClassifier(n_estimators=100, max_depth=10, n_jobs=-1, random_state=random_state)
+                    from sklearn.tree import DecisionTreeClassifier
+                    dt = DecisionTreeClassifier()
+                    dt.fit(train_X, train_y)
+                pred_probas = dt.predict_proba(test_X)
+                pred_classes = np.argmax(pred_probas, axis=1)
+                res = get_scores(test_y, pred_classes, pred_probas)
+                details_run.update(res)
+                print(res)
+                print(metrics.confusion_matrix(test_y, pred_classes))
+                results.append(details_run)
+                print('~'*50)
 
-            if use_inner_cv:
-                dt = RandomForestClassifier(n_jobs=1, random_state=random_state)
-                #gs = GridSearchCV(dt, param_grid=param_grid, cv=inner_cv, refit=True, n_jobs=-1, verbose=0)
-                gs = RandomizedSearchCV(estimator=dt, param_distributions=random_grid, n_iter=30, n_jobs=-1, cv=inner_cv, refit=True, random_state=random_state, verbose=0)
-                gs.fit(train_X, train_y)
-                dt = gs.best_estimator_
-            else:
-                dt = RandomForestClassifier(n_estimators=100, max_depth=10, n_jobs=-1, random_state=random_state)
-                dt.fit(train_X, train_y)
-            pred_probas = dt.predict_proba(test_X)
-            pred_classes = np.argmax(pred_probas, axis=1)
-            res = get_scores(test_y, pred_classes, pred_probas)
-            details_run.update(res)
-            print(res)
-            print(metrics.confusion_matrix(test_y, pred_classes))
-            results.append(details_run)
-            print('~'*50)
 
+if __name__ == '__main__':
+    main()
