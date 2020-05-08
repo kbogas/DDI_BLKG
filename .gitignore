@@ -127,7 +127,6 @@ dmypy.json
 
 
 # data
-data/
 *.csv
 
 # Pyre type checker
