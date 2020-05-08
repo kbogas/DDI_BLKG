@@ -3,3 +3,4 @@ pandas==1.0.3
 tqdm==4.45.0
 matplotlib==3.2.1
 scikit_learn==0.22.2.post1
+tabulate==0.8.7 

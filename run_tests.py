@@ -23,87 +23,13 @@ from tqdm import tqdm_notebook
 from collections import Counter
 from sklearn.ensemble import RandomForestClassifier
 from sklearn import metrics
-from sklearn.model_selection import cross_val_predict, StratifiedKFold, train_test_split
+from sklearn.model_selection import cross_val_predict, StratifiedKFold, train_test_split, RandomizedSearchCV
+from tabulate import tabulate
 
 # For deterministic purposes
 random_state = 42
 np.random.seed(random_state)
 random.seed(random_state)
-
-
-def generate_correct_data(df_all, related, balance, truth_label):
-    """
-    Simple function to fetch the needed data from the big dataframe. This allows for fetching either AD,LC or all data. Also, it allows for down-sampling the negative class to have a
-    balanced sample.
-    Input:
-        - df_all: pd.DataFrame,
-          Dataframe containing the drug-pairs with their corresponding features and a column ("AD") denoting whether this is an AD or LC pair.
-        - related: string or None,
-          if related == 'AD' only ad-related drugs are kept, while if related == 'LC' only lc drugs
-          are kept. If anything else, all drugs are kept.
-        - balance: boolean,
-          if True downsample the negative class to match the size of the positive class.
-        - truth_label: string,
-          the name of the column containing the truth labels about the interactivity of the pair
-    Output:
-        - df_data: pd.DataFrame,
-        the fetched dataframe according to related and balance
-        - details: dictionary,
-        dictionary containing the details of the selection (i.e. if only 'AD' drugs where kept, whether they were balanced etc.)
-    """
-    df_cur = df_all.copy()
-    details = {}
-    if related == 'AD':
-        df_cur = df_cur[df_cur['AD']==1]
-        details['Related'] = "AD"
-    elif related == 'LC':
-        df_cur = df_cur[df_cur['LC']==1]
-        details['Related'] = "LC"
-    else:
-        details['Related'] = "All"
-    if balanced:
-        details['Balanced'] = "Yes"
-        numb_small = df_cur.groupby(truth_label).size().min()
-        label_small = df_cur.groupby(truth_label).size().argmin()
-        print("The small class is: %d with :%d items" % (label_small, numb_small))
-        df_pos = df_cur[df_cur[truth_label] == 1].sample(n=numb_small)
-        df_neg = df_cur[df_cur[truth_label] == 0].sample(n=numb_small)
-        df_data = pd.concat([df_pos, df_neg])
-    else:
-        details['Balanced'] = "No"
-        df_data = df_cur.copy()
-    return df_data, details
-
-
-def get_scores(y, res2, res2_probas):
-    """
-    Scores for the evaluations of each method.
-    Input:
-        - y: iterable of length (N_samples),
-          contains the truth labels of the samples
-        - res2: iterable,
-          contains the predicted labels of the samples. It is expected to be of length N_samples.
-        - res2_probas: iterable,
-          contains the predicted probabilities of the classes. It is expected to be of size
-          N_samples x 2, where the [:, 1] column contains the probabilities of the positive class.
-    Output:
-        - dictionary, containing the measures needed.
-    """
-
-    if len(np.shape(res2_probas)) == 1:
-        res2_probas = np.hstack((1 - res2_probas.reshape(-1, 1), res2_probas.reshape(-1, 1)))
-    p, r, f, s = metrics.precision_recall_fscore_support(y, res2, pos_label=1)
-    return {
-        "Accuracy": metrics.accuracy_score(y, res2),
-        "AUC": metrics.roc_auc_score(y, res2_probas[:, 1]),
-        "AP": metrics.average_precision_score(y, res2_probas[:, 1]),
-        "Precision": p[1],
-        "Recall": r[1],
-        "F1": f[1],
-        "Positive Support": s[1],
-        "Support": np.sum(s)
-    }
-
 
 def load_data(model_names, path_to_embeddings_folder='./data/Embeddings/'):
     """
@@ -146,6 +72,7 @@ def load_ddi_blkg_and_dataset(path_to_embeddings_folder):
     df_all = df_all[df_all['Literature'] == 1]
     df_all = df_all.drop(['INTERACTS', 'Literature'], axis=1)
     columns = {'DDI-BLKG': [1, 105 + 1]}
+    print(f'Loaded data and DDI-BLKG embeddings. Size {df_all.shape[0], df_all.shape[1]-5}')
     return df_all, columns
 
 def append_features_for_drugs(df_all, columns, path_to_embeddings_folder, name_of_method):
@@ -191,8 +118,83 @@ def append_features_for_drugs(df_all, columns, path_to_embeddings_folder, name_o
     else:
         print('Method not implemented!You need to format the correspoding loading method!')
         raise NotImplementedError
-    print('Merged with %s embeddings. Size: (%d, %d)' % (name_of_method, df_cur_embeddings.shape))
+    print('Appended %s embeddings. Size: (%d, %d)' % (name_of_method, df_cur_embeddings.shape[0], df_cur_embeddings.shape[1]-2))
     return df_all, columns
+
+def generate_correct_data(df_all, related, balanced, truth_label):
+    """
+    Simple function to fetch the needed data from the big dataframe. This allows for fetching either AD,LC or all data. Also, it allows for down-sampling the negative class to have a
+    balanced sample.
+    Input:
+        - df_all: pd.DataFrame,
+          Dataframe containing the drug-pairs with their corresponding features and a column ("AD") denoting whether this is an AD or LC pair.
+        - related: string or None,
+          if related == 'AD' only ad-related drugs are kept, while if related == 'LC' only lc drugs
+          are kept. If anything else, all drugs are kept.
+        - balance: boolean,
+          if True downsample the negative class to match the size of the positive class.
+        - truth_label: string,
+          the name of the column containing the truth labels about the interactivity of the pair
+    Output:
+        - df_data: pd.DataFrame,
+        the fetched dataframe according to related and balance
+        - details: dictionary,
+        dictionary containing the details of the selection (i.e. if only 'AD' drugs where kept, whether they were balanced etc.)
+    """
+    df_cur = df_all.copy()
+    details = {}
+    if related == 'AD':
+        df_cur = df_cur[df_cur['AD']==1]
+        details['Related'] = "AD"
+    elif related == 'LC':
+        df_cur = df_cur[df_cur['LC']==1]
+        details['Related'] = "LC"
+    else:
+        details['Related'] = "All"
+    if balanced:
+        details['Balanced'] = "Yes"
+        numb_small = df_cur.groupby(truth_label).size().min()
+        label_small = df_cur.groupby(truth_label).size().argmin()
+        # print("The small class is: %d with :%d items" % (label_small, numb_small))
+        df_pos = df_cur[df_cur[truth_label] == 1].sample(n=numb_small)
+        df_neg = df_cur[df_cur[truth_label] == 0].sample(n=numb_small)
+        df_data = pd.concat([df_pos, df_neg])
+    else:
+        details['Balanced'] = "No"
+        df_data = df_cur.copy()
+    return df_data, details
+
+
+def get_scores(y, res2, res2_probas):
+    """
+    Scores for the evaluations of each method.
+    Input:
+        - y: iterable of length (N_samples),
+          contains the truth labels of the samples
+        - res2: iterable,
+          contains the predicted labels of the samples. It is expected to be of length N_samples.
+        - res2_probas: iterable,
+          contains the predicted probabilities of the classes. It is expected to be of size
+          N_samples x 2, where the [:, 1] column contains the probabilities of the positive class.
+    Output:
+        - dictionary, containing the measures needed.
+    """
+
+    if len(np.shape(res2_probas)) == 1:
+        res2_probas = np.hstack((1 - res2_probas.reshape(-1, 1), res2_probas.reshape(-1, 1)))
+    p, r, f, s = metrics.precision_recall_fscore_support(y, res2, pos_label=1)
+    return {
+        "Accuracy": metrics.accuracy_score(y, res2),
+        "AUC": metrics.roc_auc_score(y, res2_probas[:, 1]),
+        "AP": metrics.average_precision_score(y, res2_probas[:, 1]),
+        "Precision": p[1],
+        "Recall": r[1],
+        "F1": f[1],
+        "Positive Support": s[1],
+        "Support": np.sum(s)
+    }
+
+
 
 
 def main():
@@ -209,12 +211,14 @@ def main():
                    'RESCAL',
     ]
     # Load the data and features
+    print('~'*50)
+    print(f'Initializing data loading..')
     df_all, columns = load_data(model_names, './data/Embeddings')
     # For the nested cv procedures
     outer_cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=random_state)
-    inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
-    use_inner_cv = False
-    # Random Grid for param-tuning
+    inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
+    use_inner_cv = True
+    # Random Grid for param-tuTning
     n_estimators = [100]
     max_features = ['auto', 'sqrt']
     max_depth = [int(x) for x in np.linspace(10, 110, num=11)]
@@ -228,7 +232,7 @@ def main():
                    'min_samples_split': min_samples_split,
                    'min_samples_leaf': min_samples_leaf,
                    'bootstrap': bootstrap,
-                    'random_state':rs}
+                   'random_state':[random_state]}
     # Label of the drug pair according to which drugbank
     truth_label = 'GT_503'
     combs = [
@@ -236,16 +240,18 @@ def main():
       (False, 1, 'LC'),
     ]
     results = []
+    print('~'*50)
+    print(f'Initializing 10-fold procedure..')
     for model_name in model_names:
-        print(f'Model: {model_name}')
+        print(f'Begin 10-fold on model: {model_name}')
         for comb in combs:
             balanced, literature, related = comb
             df_data, details = generate_correct_data(df_all, related, balanced, truth_label)
             details['Model'] = model_name
             fold_count = 0
-            print(df_data[truth_label].value_counts())
-            for train_index, test_index in cv_folds.split(df_data, df_data[truth_label]):
-                print(f'Fold: {fold_count}')
+            print(f'\nData distribution for {related}: \n{df_data[truth_label].value_counts().to_string()}\n')
+            for train_index, test_index in outer_cv.split(df_data, df_data[truth_label]):
+                # rint(f'Fold: {fold_count}')
                 fold_count += 1
                 details_run = details.copy()
                 details_run['Fold'] = fold_count
@@ -270,11 +276,18 @@ def main():
                 pred_classes = np.argmax(pred_probas, axis=1)
                 res = get_scores(test_y, pred_classes, pred_probas)
                 details_run.update(res)
-                print(res)
-                print(metrics.confusion_matrix(test_y, pred_classes))
+                # print(res)
+                # print(metrics.confusion_matrix(test_y, pred_classes))
                 results.append(details_run)
-                print('~'*50)
+        print('~' * 50)
 
+
+    df = pd.DataFrame(results)[["F1", "AUC", "AP", 'Model']]
+    df = df.groupby('Model').mean().sort_values("AUC", ascending=False)
+    pd.options.display.float_format = '{:,.3f}'.format
+    print(f'Results on the 10-fold procedure (mean scores reported):')
+    print(tabulate(df, headers='keys', tablefmt='psql'))
+    exit()
 
 if __name__ == '__main__':
     main()
