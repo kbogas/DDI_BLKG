@@ -219,19 +219,21 @@ def main():
     inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
     use_inner_cv = True
     # Random Grid for param-tuTning
-    n_estimators = [100]
-    max_features = ['auto', 'sqrt']
-    max_depth = [int(x) for x in np.linspace(10, 110, num=11)]
+    n_estimators = [100, 300, 500, 1000]
+    max_features = ['auto', 'sqrt', 'log2']
+    max_depth = [int(x) for x in np.linspace(5, 110, num=5)]
     max_depth.append(None)
-    min_samples_split = [2, 5, 10]
-    min_samples_leaf = [1, 2, 4]
+    min_samples_split = [2, 5, 8, 10, 15, 20]
+    min_samples_leaf = [1, 2, 3, 4, 5, 10, 20]
     bootstrap = [True, False]
+    criterion = ["gini", "entropy"]
     random_grid = {'n_estimators': n_estimators,
                    'max_features': max_features,
                    'max_depth': max_depth,
                    'min_samples_split': min_samples_split,
                    'min_samples_leaf': min_samples_leaf,
                    'bootstrap': bootstrap,
+                   "criterion": criterion,
                    'random_state':[random_state]}
     # Label of the drug pair according to which drugbank
     truth_label = 'GT_503'

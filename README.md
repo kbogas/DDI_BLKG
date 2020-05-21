@@ -71,8 +71,8 @@ pip install -r requirements.txt
 
 You can also install the module if you would like to check it out from ipython.
 ```sh
-git clone this_project
-cd projectfolder
+git clone https://github.com/kbogas/DDI_BLKG.git
+cd DDI_BLKG
 pip install --user .
 ```
 
