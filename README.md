@@ -1,13 +1,16 @@
 # Drug-Drug Interaction Prediction on a Biomedical Literature Knowledge Graph (DDI-BLKG)
 Predicting probable drug-drug interactions (DDIs) based on a literature-KG graph.
 
+This is the code repo with model and materials for the corresponding work:
+[Drug-Drug Interaction Prediction on a Biomedical Literature Knowledge Graph](https://link.springer.com/chapter/10.1007/978-3-030-59137-3_12) presented in [AIME2020](https://aime20.aimedicine.info/).
+
 Our model is based on extracting the semantic paths that connect two drug nodes in a KG. The KG is disease-specific and based on biomedical literature and manually annotated DBs such as [D0](https://disease-ontology.org/), [G0](http://geneontology.org/) and [MeSH](https://www.nlm.nih.gov/research/umls/sourcereleasedocs/current/MSH/index.html). A overview of this process can be seen in the following picture:
 
 
 ![](images/feat_extr.png)
 
 
-More details can be found in our work (link will be added soon)
+
 
 In this repository exists  a sample script (*run\_tests*) to replicate the results comparing the different methodologies presented.
 
